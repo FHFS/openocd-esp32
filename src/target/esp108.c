@@ -855,11 +855,13 @@ static int xtensa_halt(struct target *target)
             if (!pThisTarget)
                 continue;
 
-            xtensa_do_halt(pThisTarget);
+            return xtensa_do_halt(pThisTarget);
         }
     }
-    else
-        xtensa_do_halt(target);
+    else{
+        return xtensa_do_halt(target);
+	}
+	return ERROR_FAIL;
 }
 
 static int xtensa_do_resume(struct target *target,
@@ -1343,7 +1345,7 @@ static int xtensa_step(struct target *target,
 	oldps=esp108_reg_get(&reg_list[XT_REG_IDX_PS]);
 	oldpc=esp108_reg_get(&reg_list[XT_REG_IDX_PC]);
     
-    int originalIntmask;
+    int originalIntmask = 0;
     if (s_DisableInterruptsForStepping)
     {
         originalIntmask = esp108_reg_get(&reg_list[XT_REG_IDX_INTENABLE]);
@@ -1643,7 +1645,7 @@ static int xtensa_poll(struct target *target)
     } 
     else if (esp108->core_offline)
     {
-        int oldstate = target->state;
+        // int oldstate = target->state;
         if (esp108->halt_requested && target->state != TARGET_HALTED)
         {
             target->state = TARGET_HALTED;
@@ -1773,7 +1775,7 @@ COMMAND_HANDLER(esp108_cmd_chip_reset)
             if (!pThisTarget)
                 continue;
 
-            struct esp108_common *esp108 = (struct esp108_common*)pThisTarget->arch_info;
+            esp108 = (struct esp108_common*)pThisTarget->arch_info;
             if (!esp108->core_offline)
             {
                 CMD_CTX->current_target = pThisTarget->target_number;
@@ -1959,7 +1961,7 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
     
     esp108_write_dirty_registers(target);
     
-    for (int i = 2; i < CMD_ARGC; i++)
+    for (uint i = 2; i < CMD_ARGC; i++)
     {
         char *p = strchr(CMD_ARGV[i], '=');
         if (p)
@@ -1967,7 +1969,7 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
             p[0] = 0;
             unsigned value = strtoul(p + 1, 0, 0);
             bool found = false;
-            for (int j = 0; j < esp108->core_cache->num_regs; j++)
+            for (uint j = 0; j < esp108->core_cache->num_regs; j++)
             {
                 if (!strcasecmp(reg_list[j].name, CMD_ARGV[i]))
                 {
@@ -2035,12 +2037,12 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
     if (err == ERROR_OK)
     {
         command_print(CMD_CTX, "Algorithm completed");
-        for (int i = 2; i < CMD_ARGC; i++)
+        for (uint i = 2; i < CMD_ARGC; i++)
         {
             char *p = strchr(CMD_ARGV[i], '=');
             if (!p)
             {
-                for (int j = 0; j < esp108->core_cache->num_regs; j++)
+                for (uint j = 0; j < esp108->core_cache->num_regs; j++)
                 {
                     if (!strcasecmp(reg_list[j].name, CMD_ARGV[i]))
                     {
@@ -2318,7 +2320,7 @@ static const struct command_registration esp108_any_command_handlers[] = {
     },
     {
         .name = "no_interrupts_during_steps",
-        .handler = esp108_no_interrupts_during_steps,
+		.handler = (command_handler_t)esp108_no_interrupts_during_steps,
         .mode = COMMAND_ANY,
         .help = "Controls whether interrupts are suppressed during single-stepping",
         .usage = "",
