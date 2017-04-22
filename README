@@ -1,3 +1,7 @@
+can build openocd-esp32 (sysprogs fork) with make.
+fixed some compiler warnings.
+added my built binary to src/openocd
+
 Welcome to OpenOCD!
 ===================
 
