@@ -4,7 +4,8 @@ AM_CPPFLAGS = -I$(top_srcdir)/src \
 			  -I$(top_builddir)/src \
 			  -I$(top_srcdir)/src/helper \
 			  -DPKGDATADIR=\"$(pkgdatadir)\" \
-			  -DBINDIR=\"$(bindir)\"
+			  -DBINDIR=\"$(bindir)\"\
+			  -Wno-error=misleading-indentation
 
 if INTERNAL_JIMTCL
 AM_CPPFLAGS += -I$(top_srcdir)/jimtcl \

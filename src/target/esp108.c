@@ -1969,7 +1969,7 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
             bool found = false;
             for (int j = 0; j < esp108->core_cache->num_regs; j++)
             {
-                if (!stricmp(reg_list[j].name, CMD_ARGV[i]))
+                if (!strcasecmp(reg_list[j].name, CMD_ARGV[i]))
                 {
                     esp108_reg_set(&reg_list[j], value);
                     found = true;
@@ -2042,7 +2042,7 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
             {
                 for (int j = 0; j < esp108->core_cache->num_regs; j++)
                 {
-                    if (!stricmp(reg_list[j].name, CMD_ARGV[i]))
+                    if (!strcasecmp(reg_list[j].name, CMD_ARGV[i]))
                     {
                         command_print(CMD_CTX, "%s = 0x%x", reg_list[j].name, esp108_reg_get(&reg_list[j]));
                         break;
