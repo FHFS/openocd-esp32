@@ -37,38 +37,39 @@
 #include "time_support.h"
 
 #include "esp108.h"
+#include "esp108_dbg_regs.h"
 
 /*
-This is a JTAG driver for the ESP108, the Tensilica core inside the ESP32 
+This is a JTAG driver for the ESP108, the Tensilica core inside the ESP32
 chips. The ESP108 actually is specific configuration of the configurable
-Tensilica Diamons 108Mini Xtensa core. Although this driver could also be 
-used to control other Diamond 108Mini implementations, we have none to 
+Tensilica Diamons 108Mini Xtensa core. Although this driver could also be
+used to control other Diamond 108Mini implementations, we have none to
 test this code on, so for now, this code is ESP108 specific.
 
 The code is fairly different from the LX106 JTAG code as written by
-projectgus etc for the ESP8266, because the debug controller in the LX106 
+projectgus etc for the ESP8266, because the debug controller in the LX106
 is different from that in the 108Mini.
 
 Quick reminder how everything works:
-The JTAG-pins communicate with a TAP. Using serial shifting, you can set 
+The JTAG-pins communicate with a TAP. Using serial shifting, you can set
 two registers: the Instruction Register (IR) and a Data Register (DR) for
 every instruction. The idea is that you select the IR first, then clock
 data in and out of the DR belonging to that IR. (By the way, setting IR/DR
-both sets it to the value you clock in, as well as gives you the value it 
+both sets it to the value you clock in, as well as gives you the value it
 used to contain. You essentially read and write it at the same time.)
 
 The ESP108 has a 5-bit IR, with (for debug) one important instruction:
-11100/0x1C aka NARSEL. Selecting this instruction alternatingly presents 
+11100/0x1C aka NARSEL. Selecting this instruction alternatingly presents
 the NAR and NDR (Nexus Address/Data Register) as the DR.
 
-The 8-bit NAR that's written to the chip should contains an address in bit 
-7-1 and a read/write bit as bit 0 that should be one if you want to write 
+The 8-bit NAR that's written to the chip should contains an address in bit
+7-1 and a read/write bit as bit 0 that should be one if you want to write
 data to one of the 128 Nexus registers and zero if you want to read from it. The
 data that's read from the NAR register indicates the status: Busy (bit 1) and
-Error (bit 0). The 32-bit NDR then can be used to read or write the actual 
+Error (bit 0). The 32-bit NDR then can be used to read or write the actual
 register (and execute whatever function is tied to a write).
 
-For OCD, the OCD registers are important. Debugging is mostly done by using 
+For OCD, the OCD registers are important. Debugging is mostly done by using
 these to feed the Xtensa core instructions to execute, combined with a
 data register that's directly readable/writable from the JTAG port.
 
@@ -82,16 +83,16 @@ appear to be any the ESP108.
 /*
 Multiprocessor stuff:
 
-The ESP32 has two ESP108 processors in it, which can run in SMP-mode if an 
-SMP-capable OS is running. The hardware has a few features which make 
-debugging this much easier. 
+The ESP32 has two ESP108 processors in it, which can run in SMP-mode if an
+SMP-capable OS is running. The hardware has a few features which make
+debugging this much easier.
 
-First of all, there's something called a 'break network', consisting of a 
-BreakIn input  and a BreakOut output on each CPU. The idea is that as soon 
-as a CPU goes into debug mode for whatever reason, it'll signal that using 
-its DebugOut pin. This signal is connected to the other CPU's DebugIn 
+First of all, there's something called a 'break network', consisting of a
+BreakIn input  and a BreakOut output on each CPU. The idea is that as soon
+as a CPU goes into debug mode for whatever reason, it'll signal that using
+its DebugOut pin. This signal is connected to the other CPU's DebugIn
 input, causing this CPU also to go into debugging mode. To resume execution
-when using only this break network, we will need to manually resume both 
+when using only this break network, we will need to manually resume both
 CPUs.
 
 An alternative to this is the XOCDMode output and the RunStall (or DebugStall)
@@ -101,7 +102,7 @@ resumed by either the first CPU going out of debug mode, or the second CPU
 going into debug mode: the stall is temporarily lifted as long as the stalled
 CPU is in debug mode.
 
-A third, separate, signal is CrossTrigger. This is connected in the same way 
+A third, separate, signal is CrossTrigger. This is connected in the same way
 as the breakIn/breakOut network, but is for the TRAX (trace memory) feature;
 it does not affect OCD in any way.
 */
@@ -118,15 +119,15 @@ seems to have some ARM-specific things, so we do not use that.
 
 The tracing infrastructure does have the option to stop at a certain PC
 and trigger a debugging interrupt. Theoretically, if we do not use
-the trace functionality, we might be able to use that as a 3rd hardware 
-breakpoint. ToDo: look into that. I asked, seems with the trace memory 
+the trace functionality, we might be able to use that as a 3rd hardware
+breakpoint. ToDo: look into that. I asked, seems with the trace memory
 disabled any traces done will disappear in the bitbucket, so this may be
 very much a viable option.
 */
 
 /*
 ToDo:
-This code very much assumes the host machines endianness is the same as that 
+This code very much assumes the host machines endianness is the same as that
 of the target CPU, which isn't necessarily always the case. Specifically the
 esp108_reg_set etc functions are suspect.
 */
@@ -355,6 +356,11 @@ struct esp108_reg_desc {
 					 | ((ST & 0xFF) << 4)	\
 					 | ((R & 0x0F) << 12))
 
+#define _XT_INS_FORMAT_RRRN(OPCODE,S, T,IMM4) (OPCODE         \
+                     | ((T & 0x0F) << 4)   \
+                     | ((S & 0x0F) << 8)   \
+                     | ((IMM4 & 0x0F) << 12))
+
 #define _XT_INS_FORMAT_RRI8(OPCODE,R,S,T,IMM8) (OPCODE			\
 						| ((IMM8 & 0xFF) << 16) \
 						| ((R & 0x0F) << 12 )	\
@@ -397,6 +403,10 @@ struct esp108_reg_desc {
 #define XT_INS_S16I(S,T,IMM8) _XT_INS_FORMAT_RRI8(0x005002,0,S,T,IMM8)
 /* Store 8-bit to A(S)+IMM8 from A(T) */
 #define XT_INS_S8I(S,T,IMM8)  _XT_INS_FORMAT_RRI8(0x004002,0,S,T,IMM8)
+/* S32I.N is similar to S32I, but has a 16-bit encoding and supports a smaller range of
+offset values encoded in the instruction word. */
+#define XT_INS_S32I_N(S,T,IMM4) _XT_INS_FORMAT_RRRN(0x0009,S,T,IMM4)
+#define XT_INS_S32I_N_GET_T(INSN)   ((INSN >> 4) & 0x0F)
 
 /* Read Special Register */
 #define XT_INS_RSR(SR,T) _XT_INS_FORMAT_RSR(0x030000,SR,T)
@@ -418,7 +428,7 @@ struct esp108_reg_desc {
 /* Write Floating-Point Register */
 #define XT_INS_WFR(FR,T) _XT_INS_FORMAT_RRR(0xFA0000,((FR<<4)|0x5),T)
 
-static int s_DisableInterruptsForStepping;
+extern int esp108_cmd_apptrace(struct command_invocation *cmd);
 
 //forward declarations
 static int xtensa_step(struct target *target,
@@ -428,7 +438,7 @@ static int xtensa_step(struct target *target,
 static int xtensa_poll(struct target *target);
 
 
-static void esp108_add_set_ir(struct target *target, uint8_t value)
+void esp108_add_set_ir(struct target *target, uint8_t value)
 {
 	uint8_t t[4];
 	struct scan_field field;
@@ -440,7 +450,7 @@ static void esp108_add_set_ir(struct target *target, uint8_t value)
 }
 
 
-static void esp108_add_dr_scan(struct target *target, int len, const uint8_t *src, uint8_t *dest, tap_state_t endstate)
+void esp108_add_dr_scan(struct target *target, int len, const uint8_t *src, uint8_t *dest, tap_state_t endstate)
 {
 	struct scan_field field;
 	memset(&field, 0, sizeof field);
@@ -451,14 +461,14 @@ static void esp108_add_dr_scan(struct target *target, int len, const uint8_t *sr
 }
 
 //Set the PWRCTL TAP register to a value
-static void esp108_queue_pwrctl_set(struct target *target, uint8_t value) 
+static void esp108_queue_pwrctl_set(struct target *target, uint8_t value)
 {
 	esp108_add_set_ir(target, TAPINS_PWRCTL);
 	esp108_add_dr_scan(target, TAPINS_PWRCTL_LEN, &value, NULL, TAP_IDLE);
 }
 
 //Read the PWRSTAT TAP register and clear the XWASRESET bits.
-static void esp108_queue_pwrstat_readclear(struct target *target, uint8_t *value) 
+static void esp108_queue_pwrstat_readclear(struct target *target, uint8_t *value)
 {
 	const uint8_t pwrstatClr=PWRSTAT_DEBUGWASRESET|PWRSTAT_COREWASRESET;
 	esp108_add_set_ir(target, TAPINS_PWRSTAT);
@@ -466,7 +476,7 @@ static void esp108_queue_pwrstat_readclear(struct target *target, uint8_t *value
 }
 
 
-static void esp108_queue_nexus_reg_write(struct target *target, const uint8_t reg, const uint32_t value) 
+void esp108_queue_nexus_reg_write(struct target *target, const uint8_t reg, const uint32_t value)
 {
 	uint8_t regdata=(reg<<1)|1;
 	uint8_t valdata[]={value, value>>8, value>>16, value>>24};
@@ -475,7 +485,7 @@ static void esp108_queue_nexus_reg_write(struct target *target, const uint8_t re
 	esp108_add_dr_scan(target, TAPINS_NARSEL_DATALEN, valdata, NULL, TAP_IDLE);
 }
 
-static void esp108_queue_nexus_reg_read(struct target *target, const uint8_t reg, uint8_t *value) 
+void esp108_queue_nexus_reg_read(struct target *target, const uint8_t reg, uint8_t *value)
 {
 	uint8_t regdata=(reg<<1)|0;
 	uint8_t dummy[4]={0,0,0,0};
@@ -517,7 +527,7 @@ allow the power to an 1.8V flash chip to be raised to 3.3V, or the other way aro
 esp108 flashbootstrap command to set a level, and this routine will make sure the tdi line will return to
 that when the jtag port is idle.
 */
-static void esp108_queue_tdi_idle(struct target *target) {
+void esp108_queue_tdi_idle(struct target *target) {
 	struct esp108_common *esp108=(struct esp108_common*)target->arch_info;
 	static uint8_t value;
 	uint8_t t[4]={0,0,0,0};
@@ -621,8 +631,8 @@ static int esp108_fetch_all_regs(struct target *target)
 	struct reg *reg_list=esp108->core_cache->reg_list;
 	uint8_t regvals[XT_NUM_REGS][4];
 	uint8_t dsrs[XT_NUM_REGS][4];
-	
-	//Assume the CPU has just halted. We now want to fill the register cache with all the 
+
+	//Assume the CPU has just halted. We now want to fill the register cache with all the
 	//register contents GDB needs. For speed, we pipeline all the read operations, execute them
 	//in one go, then sort everything out from the regvals variable.
 
@@ -635,7 +645,7 @@ static int esp108_fetch_all_regs(struct target *target)
 			esp108_queue_nexus_reg_read(target, NARADR_DDR, regvals[XT_REG_IDX_AR0+i+j]);
 			esp108_queue_nexus_reg_read(target, NARADR_DSR, dsrs[XT_REG_IDX_AR0+i+j]);
 		}
-		//Now rotate the window so we'll see the next 16 registers. The final rotate will wraparound, 
+		//Now rotate the window so we'll see the next 16 registers. The final rotate will wraparound,
 		//leaving us in the state we were.
 		esp108_queue_exec_ins(target, XT_INS_ROTW(4));
 	}
@@ -786,7 +796,7 @@ static int esp108_write_dirty_registers(struct target *target)
 				reg_list[realadr].dirty=0;
 			}
 		}
-		//Now rotate the window so we'll see the next 16 registers. The final rotate will wraparound, 
+		//Now rotate the window so we'll see the next 16 registers. The final rotate will wraparound,
 		//leaving us in the state we were.
 		esp108_queue_exec_ins(target, XT_INS_ROTW(4));
 	}
@@ -797,30 +807,30 @@ static int esp108_write_dirty_registers(struct target *target)
 
 static int xtensa_do_halt(struct target *target)
 {
-    int res;
+	int res;
     struct esp108_common *esp108 = target->arch_info;
     
     if (!esp108->core_offline)
     {
-        LOG_DEBUG("%s", __func__);
-        if (target->state == TARGET_HALTED) {
-            LOG_DEBUG("%s: target was already halted", target->cmd_name);
-            return ERROR_OK;
-        }
+	LOG_DEBUG("%s", __func__);
+	if (target->state == TARGET_HALTED) {
+		LOG_DEBUG("%s: target was already halted", target->cmd_name);
+		return ERROR_OK;
+	}
 
-        esp108_queue_nexus_reg_write(target, NARADR_DCRSET, OCDDCR_DEBUGINTERRUPT);
-        esp108_queue_tdi_idle(target);
-        res = jtag_execute_queue();
+	esp108_queue_nexus_reg_write(target, NARADR_DCRSET, OCDDCR_DEBUGINTERRUPT);
+	esp108_queue_tdi_idle(target);
+	res = jtag_execute_queue();
 
-        if (res != ERROR_OK) {
-            LOG_ERROR("%s: Failed to set OCDDCR_DEBUGINTERRUPT. Can't halt.", target->cmd_name);
-            return ERROR_FAIL;
-        }
+	if (res != ERROR_OK) {
+		LOG_ERROR("%s: Failed to set OCDDCR_DEBUGINTERRUPT. Can't halt.", target->cmd_name);
+		return ERROR_FAIL;
+	}
     }
     
     esp108->halt_requested = 1;
     
-    return ERROR_OK;
+	return ERROR_OK;
 }
 
 static int xtensa_do_halt_if_runing_and_wait(struct target *target)
@@ -871,59 +881,58 @@ static int xtensa_do_resume(struct target *target,
 			 int debug_execution)
 {
 	struct esp108_common *esp108=(struct esp108_common*)target->arch_info;
-    int res = ERROR_OK;
+	    int res = ERROR_OK;
     
     if (!esp108->core_offline)
     {
         struct reg *reg_list = esp108->core_cache->reg_list;
-        size_t slot;
-        uint32_t bpena;
+	size_t slot;
+	uint32_t bpena;
 
-        LOG_DEBUG("%s: %s current=%d address=%04" PRIx32, target->cmd_name, __func__, current, address);
+	LOG_DEBUG("%s: %s current=%d address=%04" PRIx32, target->cmd_name, __func__, current, address);
 
-        if (target->state != TARGET_HALTED) {
-            LOG_WARNING("%s: %s: target not halted", target->cmd_name, __func__);
-            return ERROR_TARGET_NOT_HALTED;
-        }
+	if (target->state != TARGET_HALTED) {
+		LOG_WARNING("%s: %s: target not halted", target->cmd_name, __func__);
+		return ERROR_TARGET_NOT_HALTED;
+	}
 
-        if (address && !current) {
-            esp108_reg_set(&reg_list[XT_REG_IDX_PC], address);
-        }
-        else {
-            int cause = esp108_reg_get(&reg_list[XT_REG_IDX_DEBUGCAUSE]);
-            if (cause&DEBUGCAUSE_DB) {
-            	//We stopped due to a watchpoint. We can't just resume executing the instruction again because
-            	//that would trigger the watchpoint again. To fix this, we single-step, which ignores watchpoints.
-                xtensa_step(target, current, address, handle_breakpoints);
-            }
-        }
+	if (address && !current) {
+		esp108_reg_set(&reg_list[XT_REG_IDX_PC], address);
+	} else {
+		int cause=esp108_reg_get(&reg_list[XT_REG_IDX_DEBUGCAUSE]);
+		if (cause&DEBUGCAUSE_DB) {
+			//We stopped due to a watchpoint. We can't just resume executing the instruction again because
+			//that would trigger the watchpoint again. To fix this, we single-step, which ignores watchpoints.
+			xtensa_step(target, current, address, handle_breakpoints);
+		}
+	}
 
-        	//Write back hw breakpoints. Current FreeRTOS SMP code can set a hw breakpoint on an
-        	//exception; we need to clear that and return to the breakpoints gdb has set on resume.
-        bpena = 0;
-        for (slot = 0; slot < esp108->num_brps; slot++) {
-            if (esp108->hw_brps[slot] != NULL) {
-            	/* Write IBREAKA[slot] and set bit #slot in IBREAKENABLE */
-                esp108_reg_set(&reg_list[XT_REG_IDX_IBREAKA0 + slot], esp108->hw_brps[slot]->address);
-                bpena |= (1 << slot);
-            }
-        }
-        esp108_reg_set(&reg_list[XT_REG_IDX_IBREAKENABLE], bpena);
+	//Write back hw breakpoints. Current FreeRTOS SMP code can set a hw breakpoint on an
+	//exception; we need to clear that and return to the breakpoints gdb has set on resume.
+	bpena=0;
+	for(slot = 0; slot < esp108->num_brps; slot++) {
+		if (esp108->hw_brps[slot]!=NULL) {
+			/* Write IBREAKA[slot] and set bit #slot in IBREAKENABLE */
+			esp108_reg_set(&reg_list[XT_REG_IDX_IBREAKA0+slot], esp108->hw_brps[slot]->address);
+			bpena|=(1<<slot);
+		}
+	}
+	esp108_reg_set(&reg_list[XT_REG_IDX_IBREAKENABLE], bpena);
 
-        res = esp108_write_dirty_registers(target);
-        if (res != ERROR_OK) {
-            LOG_ERROR("%s: Failed to write back register cache.", target->cmd_name);
-            return ERROR_FAIL;
-        }
+	res=esp108_write_dirty_registers(target);
+	if(res != ERROR_OK) {
+		LOG_ERROR("%s: Failed to write back register cache.", target->cmd_name);
+		return ERROR_FAIL;
+	}
 
-        	//Execute return from debug exception instruction
-        esp108_queue_exec_ins(target, XT_INS_RFDO);
-        res = jtag_execute_queue();
-        if (res != ERROR_OK) {
-            LOG_ERROR("%s: Failed to clear OCDDCR_DEBUGINTERRUPT and resume execution.", target->cmd_name);
-            return ERROR_FAIL;
-        }
-        esp108_checkdsr(target);
+	//Execute return from debug exception instruction
+	esp108_queue_exec_ins(target, XT_INS_RFDO);
+	res=jtag_execute_queue();
+	if(res != ERROR_OK) {
+		LOG_ERROR("%s: Failed to clear OCDDCR_DEBUGINTERRUPT and resume execution.", target->cmd_name);
+		return ERROR_FAIL;
+	}
+	esp108_checkdsr(target);
     }
 
 	target->debug_reason = DBG_REASON_NOTHALTED;
@@ -934,7 +943,7 @@ static int xtensa_do_resume(struct target *target,
 	res = target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
 
 	return res;
-}
+	}
 
 static int xtensa_resume(struct target *target,
     int current,
@@ -987,7 +996,7 @@ static int xtensa_read_memory(struct target *target,
 			return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 		}
 	}
-	
+
 	//We're going to use A3 here
 	esp108_mark_register_dirty(target, XT_REG_IDX_A3);
 	//Write start address to A3
@@ -1003,7 +1012,7 @@ static int xtensa_read_memory(struct target *target,
 	res=jtag_execute_queue();
 	if (res==ERROR_OK) res=esp108_checkdsr(target);
 	if (res!=ERROR_OK) LOG_WARNING("%s: Failed reading %d bytes at address 0x%08X",target->cmd_name, count*size, address);
-	
+
 	if (albuff!=buffer) {
 		memcpy(buffer, albuff+(address&3), (size*count));
 		free(albuff);
@@ -1029,13 +1038,13 @@ static int xtensa_write_memory(struct target *target,
 {
 	//This memory write function can get thrown nigh everything into it, from
 	//aligned uint32 writes to unaligned uint8ths. The Xtensa memory doesn't always
-	//accept anything but aligned uint32 writes, though. That is why we convert 
+	//accept anything but aligned uint32 writes, though. That is why we convert
 	//everything into that.
-	
+
 	uint32_t addrstart_al=(address)&~3;
 	uint32_t addrend_al=(address+(size*count)+3)&~3;
 	uint32_t adr=addrstart_al;
-	
+
 	int i=0;
 	int res;
 	uint8_t *albuff;
@@ -1344,7 +1353,7 @@ static int xtensa_step(struct target *target,
 	//Save old ps/pc
 	oldps=esp108_reg_get(&reg_list[XT_REG_IDX_PS]);
 	oldpc=esp108_reg_get(&reg_list[XT_REG_IDX_PC]);
-    
+
     int originalIntmask = 0;
     if (s_DisableInterruptsForStepping)
     {
@@ -1378,12 +1387,12 @@ static int xtensa_step(struct target *target,
 
 	//Sometimes (because of eg an interrupt) the pc won't actually increment. In that case, we repeat the
 	//step.
-	//(Later edit: Not sure about that actually... may have been a glitch in my logic. I'm keeping in this 
+	//(Later edit: Not sure about that actually... may have been a glitch in my logic. I'm keeping in this
 	//loop anyway, it probably doesn't hurt anyway.)
 	do {
 		icountlvl=(esp108_reg_get(&reg_list[XT_REG_IDX_PS])&15)+1;
 		if (icountlvl>15) icountlvl=15;
-		
+
 		/* Load debug level into ICOUNTLEVEL. We'll make this one more than the current intlevel. */
 		esp108_reg_set(&reg_list[XT_REG_IDX_ICOUNTLEVEL], icountlvl);
 		esp108_reg_set(&reg_list[XT_REG_IDX_ICOUNT], icount_val);
@@ -1473,7 +1482,7 @@ static int xtensa_target_create(struct target *target, Jim_Interp *interp)
 	struct reg *reg_list = calloc(XT_NUM_REGS, sizeof(struct reg));
 	uint8_t i;
 
-	if (!esp108) 
+	if (!esp108)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	target->arch_info = esp108;
@@ -1571,7 +1580,7 @@ static int xtensa_poll(struct target *target)
 	esp108_queue_tdi_idle(target);
 	res=jtag_execute_queue();
 	if (res!=ERROR_OK) return res;
-	
+
 	esp108_queue_nexus_reg_write(target, NARADR_DCRSET, OCDDCR_ENABLEOCD);
 	esp108_queue_nexus_reg_read(target, NARADR_OCDID, ocdid);
 	esp108_queue_nexus_reg_read(target, NARADR_DSR, dsr);
@@ -1582,8 +1591,8 @@ static int xtensa_poll(struct target *target)
 
 	if (res!=ERROR_OK) return res;
 //	LOG_INFO("esp8266: ocdid 0x%X dsr 0x%X", intfromchars(ocdid), intfromchars(dsr));
-	
-    esp108->core_offline = pwrstat == 0 && intfromchars(dsr) == 0;
+
+	 esp108->core_offline = pwrstat == 0 && intfromchars(dsr) == 0;
     
     if (pwrstath&PWRSTAT_COREWASRESET)
     {
@@ -1596,27 +1605,24 @@ static int xtensa_poll(struct target *target)
             int oldstate = target->state;
             target->state = TARGET_HALTED;
             esp108->halt_requested = 0;
-			
-            //LOG_INFO("%s: %s: Target halted (dsr=%08X). Fetching register contents.", target->cmd_name, __FUNCTION__, intfromchars(dsr));
-            esp108_fetch_all_regs(target);
-            LOG_INFO("%s: Target halted, pc=0x%08X", target->cmd_name, esp108_reg_get(&reg_list[XT_REG_IDX_PC]));
 
-            			//Examine why the target was halted
-            int cause = esp108_reg_get(&reg_list[XT_REG_IDX_DEBUGCAUSE]);
-            target->debug_reason = DBG_REASON_DBGRQ;
-            if (cause&DEBUGCAUSE_IC) target->debug_reason = DBG_REASON_SINGLESTEP;
-            if (cause&(DEBUGCAUSE_IB | DEBUGCAUSE_BN | DEBUGCAUSE_BI)) target->debug_reason = DBG_REASON_BREAKPOINT;
-            if (cause&DEBUGCAUSE_DB) target->debug_reason = DBG_REASON_WATCHPOINT;
-			
-            //Call any event callbacks that are applicable
-            if (oldstate == TARGET_DEBUG_RUNNING)
-            {
-                target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
-            }
-            else
-            {
-                target_call_event_callbacks(target, TARGET_EVENT_HALTED);
-            }
+			//LOG_INFO("%s: %s: Target halted (dsr=%08X). Fetching register contents.", target->cmd_name, __FUNCTION__, intfromchars(dsr));
+			esp108_fetch_all_regs(target);
+			LOG_INFO("%s: Target halted, pc=0x%08X", target->cmd_name, esp108_reg_get(&reg_list[XT_REG_IDX_PC]));
+
+			//Examine why the target was halted
+			int cause=esp108_reg_get(&reg_list[XT_REG_IDX_DEBUGCAUSE]);
+			target->debug_reason = DBG_REASON_DBGRQ;
+			if (cause&DEBUGCAUSE_IC) target->debug_reason = DBG_REASON_SINGLESTEP;
+			if (cause&(DEBUGCAUSE_IB|DEBUGCAUSE_BN|DEBUGCAUSE_BI)) target->debug_reason = DBG_REASON_BREAKPOINT;
+			if (cause&DEBUGCAUSE_DB) target->debug_reason = DBG_REASON_WATCHPOINT;
+
+			//Call any event callbacks that are applicable
+			if(oldstate == TARGET_DEBUG_RUNNING) {
+				target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
+			} else {
+				target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+			}
             
             //Disable watchdogs. The TCL-level hook for this does not work reliably, so we do it explicitly here.
             xtensa_write_hwreg(target, 0x3FF5F064, 0x50d83aa1); //TIMG1 WDT
@@ -1738,7 +1744,7 @@ COMMAND_HANDLER(esp108_cmd_smpbreak)
 	res=jtag_execute_queue();
 	if (res==ERROR_OK) {
 		i=intfromchars(dsr)&(OCDDCR_BREAKINEN|OCDDCR_BREAKOUTEN|OCDDCR_RUNSTALLINEN|OCDDCR_DEBUGMODEOUTEN);
-		command_print(CMD_CTX, "%s: Current bits set:%s%s%s%s%s", 
+		command_print(CMD_CTX, "%s: Current bits set:%s%s%s%s%s",
 					target->cmd_name,
 					(i==0)?" none":"",
 					(i&OCDDCR_BREAKINEN)?" BreakIn":"",
@@ -2081,7 +2087,7 @@ COMMAND_HANDLER(esp108_cmd_tracestart)
 	int res;
 	unsigned int i;
 	uint8_t traxstat[8];
-	
+
 	//Check current status of trace hardware
 	esp108_queue_nexus_reg_read(target, NARADR_TRAXSTAT, traxstat);
 	esp108_queue_tdi_idle(target);
@@ -2160,7 +2166,7 @@ COMMAND_HANDLER(esp108_cmd_tracestop)
 	esp108_queue_tdi_idle(target);
 	res=jtag_execute_queue();
 	if (res!=ERROR_OK) return res;
-	
+
 	command_print(CMD_CTX, "Trace stop triggered.");
 	return ERROR_OK;
 }
@@ -2178,7 +2184,7 @@ COMMAND_HANDLER(esp108_cmd_tracedump)
 		command_print(CMD_CTX, "Need filename to dump to as output!");
 		return ERROR_FAIL;
 	}
-	
+
 	esp108_queue_nexus_reg_read(target, NARADR_TRAXSTAT, traxstat);
 	esp108_queue_nexus_reg_read(target, NARADR_TRAXCTRL, traxctl);
 	esp108_queue_nexus_reg_read(target, NARADR_MEMADDRSTART, memadrstart);
@@ -2297,6 +2303,13 @@ static const struct command_registration esp108_any_command_handlers[] = {
 		.help = "Tracing: Dump trace memory to a file",
 		.usage = "outfile",
 	},
+    {
+        .name = "apptrace",
+        .handler = esp108_cmd_apptrace,
+        .mode = COMMAND_ANY,
+        .help = "Tracing: app tracing control and status. Starts, stops or queries tracing process status.",
+        .usage = "[start outfile [trace_size [stop_tmo [skip_size [poll_period [wait4halt]]]]]] | [stop] | [status] | [dump outfile]",
+    },
 	{
 		.name = "smpbreak",
 		.handler = esp108_cmd_smpbreak,
@@ -2310,7 +2323,7 @@ static const struct command_registration esp108_any_command_handlers[] = {
 		.mode = COMMAND_ANY,
 		.help = "Set the idle state of the TMS pin, which at reset also is the voltage selector for the flash chip.",
 		.usage = "none|1.8|3.3|high|low",
-	},
+			},
     {
         .name = "chip_reset",
         .handler = esp108_cmd_chip_reset,
@@ -2331,7 +2344,7 @@ static const struct command_registration esp108_any_command_handlers[] = {
         .mode = COMMAND_ANY,
         .help = "Runs an algorithm at the specified address on the current core",
         .usage = "address timeout",
-    },
+	},
 	COMMAND_REGISTRATION_DONE
 };
 
