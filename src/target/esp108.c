@@ -322,6 +322,8 @@ esp108_reg_set etc functions are suspect.
 #define XT_NUM_BREAKPOINTS 2
 #define XT_NUM_WATCHPOINTS 2
 
+static bool s_DisableInterruptsForStepping = false;//, s_FeedWatchdogDuringStops = false;
+
 
 enum esp108_reg_t {
 	XT_REG_GENERAL = 0,		//General-purpose register; part of the windowed register set
@@ -511,14 +513,6 @@ static void esp108_reg_set(struct reg *reg, uint32_t value)
 	if (oldval==value) return;
 	*((uint32_t*)reg->value)=value;
 	reg->dirty=1;
-}
-
-
-//Small helper function to convert the char arrays that result from a jtag
-//call to a well-formatted uint32_t.
-static uint32_t intfromchars(uint8_t *c) 
-{
-	return c[0]+(c[1]<<8)+(c[2]<<16)+(c[3]<<24);
 }
 
 /*

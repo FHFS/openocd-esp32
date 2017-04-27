@@ -1089,7 +1089,7 @@ static inline int gdb_reg_pos(struct target *target, int pos, int len)
  * The format of reg->value is little endian
  *
  */
-static void gdb_str_to_target(struct target *target,
+void gdb_str_to_target(struct target *target,
 		char *tstr, struct reg *reg)
 {
 	int i;
